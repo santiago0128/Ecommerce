@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useRef, ReactNode } from 'react';
 
 export interface ChatMessage {
   id: string;
@@ -36,12 +36,9 @@ interface ChatContextType {
 
 const ChatContext = createContext<ChatContextType | null>(null);
 
-const now = () => new Date().toISOString();
-const fmt = () => new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-
 // Generate a stable visitor id for the session
 const getVisitorId = () => {
-  if (typeof window === 'undefined') return 'ssr';
+  if (typeof window === 'undefined') return null;
   let id = sessionStorage.getItem('ecoshop_visitor_id');
   if (!id) {
     id = 'v_' + Math.random().toString(36).substring(2, 10);
@@ -50,128 +47,168 @@ const getVisitorId = () => {
   return id;
 };
 
-const MOCK_CONVERSATIONS: Conversation[] = [
-  {
-    id: 'c_demo1',
-    visitorName: 'Visitante #1',
-    visitorId: 'v_demo1',
-    startedAt: new Date(Date.now() - 1000 * 60 * 25).toISOString(),
-    lastMessageAt: new Date(Date.now() - 1000 * 60 * 5).toISOString(),
-    status: 'open',
-    unreadByAdmin: 2,
-    messages: [
-      { id: 'm1', text: '¡Hola! 👋 Soy el asistente de EcoShop. ¿En qué puedo ayudarte?', from: 'bot', timestamp: new Date(Date.now() - 1000 * 60 * 25).toISOString() },
-      { id: 'm2', text: 'Hola, quiero saber cuánto tarda el envío a Canarias', from: 'user', timestamp: new Date(Date.now() - 1000 * 60 * 20).toISOString() },
-      { id: 'm3', text: 'Los envíos estándar tardan 2-4 días hábiles y son gratuitos en pedidos superiores a $50.', from: 'bot', timestamp: new Date(Date.now() - 1000 * 60 * 19).toISOString() },
-      { id: 'm4', text: 'Y si pido hoy, ¿llega antes del viernes?', from: 'user', timestamp: new Date(Date.now() - 1000 * 60 * 5).toISOString() },
-      { id: 'm5', text: 'También quiero saber si tienen devolución gratuita', from: 'user', timestamp: new Date(Date.now() - 1000 * 60 * 4).toISOString() },
-    ],
-  },
-  {
-    id: 'c_demo2',
-    visitorName: 'Visitante #2',
-    visitorId: 'v_demo2',
-    startedAt: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString(),
-    lastMessageAt: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-    status: 'resolved',
-    unreadByAdmin: 0,
-    messages: [
-      { id: 'm6', text: '¡Hola! 👋 Soy el asistente de EcoShop. ¿En qué puedo ayudarte?', from: 'bot', timestamp: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString() },
-      { id: 'm7', text: 'Buenos días, tengo un problema con mi pedido #ECO-23451', from: 'user', timestamp: new Date(Date.now() - 1000 * 60 * 60 * 2 + 60000).toISOString() },
-      { id: 'm8', text: '¡Gracias por contactarnos! Un agente estará contigo pronto.', from: 'bot', timestamp: new Date(Date.now() - 1000 * 60 * 60 * 2 + 62000).toISOString() },
-      { id: 'm9', text: 'Hola, soy del equipo de soporte. ¿En qué puedo ayudarte con el pedido #ECO-23451?', from: 'admin', timestamp: new Date(Date.now() - 1000 * 60 * 55).toISOString() },
-      { id: 'm10', text: 'Ya está solucionado, gracias!', from: 'user', timestamp: new Date(Date.now() - 1000 * 60 * 45).toISOString() },
-    ],
-  },
-  {
-    id: 'c_demo3',
-    visitorName: 'Visitante #3',
-    visitorId: 'v_demo3',
-    startedAt: new Date(Date.now() - 1000 * 60 * 10).toISOString(),
-    lastMessageAt: new Date(Date.now() - 1000 * 60 * 2).toISOString(),
-    status: 'open',
-    unreadByAdmin: 1,
-    messages: [
-      { id: 'm11', text: '¡Hola! 👋 Soy el asistente de EcoShop. ¿En qué puedo ayudarte?', from: 'bot', timestamp: new Date(Date.now() - 1000 * 60 * 10).toISOString() },
-      { id: 'm12', text: '¿Aceptan tarjeta de débito?', from: 'user', timestamp: new Date(Date.now() - 1000 * 60 * 2).toISOString() },
-    ],
-  },
-];
+// Raw row shape returned by the API (snake_case columns from SQL Server)
+interface RawMessage {
+  id: string;
+  conversation_id: string;
+  text: string;
+  from: 'user' | 'bot' | 'admin';
+  timestamp: string;
+}
+interface RawConversation {
+  id: string;
+  visitor_id: string;
+  visitor_name: string;
+  status: 'open' | 'resolved';
+  unread_by_admin: number;
+  started_at: string;
+  last_message_at: string;
+  messages: RawMessage[];
+}
+
+function mapConversation(raw: RawConversation): Conversation {
+  return {
+    id: raw.id,
+    visitorId: raw.visitor_id,
+    visitorName: raw.visitor_name,
+    status: raw.status,
+    unreadByAdmin: raw.unread_by_admin,
+    startedAt: raw.started_at,
+    lastMessageAt: raw.last_message_at,
+    messages: raw.messages.map(m => ({
+      id: m.id,
+      text: m.text,
+      from: m.from,
+      timestamp: m.timestamp,
+    })),
+  };
+}
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const [conversations, setConversations] = useState<Conversation[]>(MOCK_CONVERSATIONS);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [sessionConversation, setSessionConversation] = useState<Conversation | null>(null);
+  const visitorIdRef = useRef<string | null>(null);
 
-  // Get or create conversation for current visitor session
-  const getOrCreateSession = useCallback((): string => {
-    if (sessionId) return sessionId;
+  // ─── Visitor session: load/create the open conversation for this browser session ───
+  useEffect(() => {
     const visitorId = getVisitorId();
-    const existing = conversations.find(c => c.visitorId === visitorId && c.status === 'open');
-    if (existing) { setSessionId(existing.id); return existing.id; }
-    const newId = 'c_' + Math.random().toString(36).substring(2, 10);
-    const newConv: Conversation = {
-      id: newId,
-      visitorId,
-      visitorName: `Visitante`,
-      startedAt: now(),
-      lastMessageAt: now(),
-      status: 'open',
-      unreadByAdmin: 0,
-      messages: [],
-    };
-    setConversations(prev => [newConv, ...prev]);
-    setSessionId(newId);
-    return newId;
-  }, [sessionId, conversations]);
+    if (!visitorId) return;
+    visitorIdRef.current = visitorId;
 
-  const sessionConversation = conversations.find(c => c.id === sessionId) ?? null;
+    fetch(`/api/chat?visitorId=${encodeURIComponent(visitorId)}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (data?.conversation) setSessionConversation(mapConversation(data.conversation));
+      })
+      .catch(() => {});
+  }, []);
 
-  const addUserMessage = useCallback((text: string) => {
-    const convId = getOrCreateSession();
-    const msg: ChatMessage = { id: String(Date.now()), text, from: 'user', timestamp: now() };
-    setConversations(prev => prev.map(c =>
-      c.id === convId
-        ? { ...c, messages: [...c.messages, msg], lastMessageAt: now(), unreadByAdmin: c.unreadByAdmin + 1 }
-        : c
-    ));
-  }, [getOrCreateSession]);
+  const sendVisitorMessage = useCallback(async (text: string, from: 'user' | 'bot') => {
+    const visitorId = visitorIdRef.current ?? getVisitorId();
+    if (!visitorId) return;
+    visitorIdRef.current = visitorId;
 
-  const addBotMessage = useCallback((text: string) => {
-    const convId = getOrCreateSession();
-    const msg: ChatMessage = { id: String(Date.now()), text, from: 'bot', timestamp: now() };
-    setConversations(prev => prev.map(c =>
-      c.id === convId
-        ? { ...c, messages: [...c.messages, msg], lastMessageAt: now() }
-        : c
-    ));
-  }, [getOrCreateSession]);
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visitorId, text, from }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const msg: ChatMessage = {
+        id: data.message.id,
+        text: data.message.text,
+        from: data.message.from,
+        timestamp: data.message.timestamp,
+      };
+
+      setSessionConversation(prev => {
+        if (prev && prev.id === data.conversationId) {
+          return { ...prev, messages: [...prev.messages, msg], lastMessageAt: msg.timestamp };
+        }
+        return {
+          id: data.conversationId,
+          visitorId,
+          visitorName: 'Visitante',
+          startedAt: msg.timestamp,
+          lastMessageAt: msg.timestamp,
+          status: 'open',
+          unreadByAdmin: from === 'user' ? 1 : 0,
+          messages: [msg],
+        };
+      });
+    } catch {
+      // Silently ignore — chat is best-effort from the visitor's perspective
+    }
+  }, []);
+
+  const addUserMessage = useCallback((text: string) => { void sendVisitorMessage(text, 'user'); }, [sendVisitorMessage]);
+  const addBotMessage  = useCallback((text: string) => { void sendVisitorMessage(text, 'bot');  }, [sendVisitorMessage]);
+
+  // ─── Admin panel: load and poll all conversations ───
+  const loadConversations = useCallback(() => {
+    fetch('/api/admin/chats')
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (!data?.conversations) return;
+        setConversations((data.conversations as RawConversation[]).map(mapConversation));
+      })
+      .catch(() => {
+        // ignore — admin panel will retry on next poll
+      });
+  }, []);
+
+  useEffect(() => {
+    loadConversations();
+    const interval = setInterval(loadConversations, 8000);
+    return () => clearInterval(interval);
+  }, [loadConversations]);
 
   const addAdminReply = useCallback((conversationId: string, text: string) => {
-    const msg: ChatMessage = { id: String(Date.now()), text, from: 'admin', timestamp: now() };
-    setConversations(prev => prev.map(c =>
-      c.id === conversationId
-        ? { ...c, messages: [...c.messages, msg], lastMessageAt: now() }
-        : c
-    ));
+    fetch(`/api/admin/chats/${conversationId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (!data?.message) return;
+        const msg: ChatMessage = {
+          id: data.message.id,
+          text: data.message.text,
+          from: data.message.from,
+          timestamp: data.message.timestamp,
+        };
+        setConversations(prev => prev.map(c =>
+          c.id === conversationId
+            ? { ...c, messages: [...c.messages, msg], lastMessageAt: msg.timestamp }
+            : c
+        ));
+      })
+      .catch(() => {});
+  }, []);
+
+  const patchConversation = useCallback((conversationId: string, body: Record<string, unknown>, apply: (c: Conversation) => Conversation) => {
+    setConversations(prev => prev.map(c => (c.id === conversationId ? apply(c) : c)));
+    fetch(`/api/admin/chats/${conversationId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).catch(() => {});
   }, []);
 
   const markAsRead = useCallback((conversationId: string) => {
-    setConversations(prev => prev.map(c =>
-      c.id === conversationId ? { ...c, unreadByAdmin: 0 } : c
-    ));
-  }, []);
+    patchConversation(conversationId, { markRead: true }, c => ({ ...c, unreadByAdmin: 0 }));
+  }, [patchConversation]);
 
   const resolveConversation = useCallback((conversationId: string) => {
-    setConversations(prev => prev.map(c =>
-      c.id === conversationId ? { ...c, status: 'resolved', unreadByAdmin: 0 } : c
-    ));
-  }, []);
+    patchConversation(conversationId, { status: 'resolved' }, c => ({ ...c, status: 'resolved', unreadByAdmin: 0 }));
+  }, [patchConversation]);
 
   const reopenConversation = useCallback((conversationId: string) => {
-    setConversations(prev => prev.map(c =>
-      c.id === conversationId ? { ...c, status: 'open' } : c
-    ));
-  }, []);
+    patchConversation(conversationId, { status: 'open' }, c => ({ ...c, status: 'open' }));
+  }, [patchConversation]);
 
   const totalUnread = conversations.reduce((sum, c) => sum + c.unreadByAdmin, 0);
 

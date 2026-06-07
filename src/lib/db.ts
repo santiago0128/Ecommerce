@@ -1,9 +1,4 @@
-import { createRequire } from 'module';
-
-// mssql is CJS-only; use createRequire so Turbopack doesn't wrap/transform the exports
-const require = createRequire(import.meta.url);
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const sql = require('mssql') as typeof import('mssql');
+import sql from 'mssql';
 
 const config: import('mssql').config = {
   server:   process.env.DB_SERVER   ?? 'localhost',

@@ -32,13 +32,16 @@ export default function ChatWidget() {
   const [initialized, setInitialized] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Send the initial greeting once when the widget first opens
+  // Send the initial greeting once when the widget first opens — but only if
+  // this visitor doesn't already have messages (avoids re-greeting on reload)
   useEffect(() => {
     if (open && !initialized) {
       setInitialized(true);
-      addBotMessage('¡Hola! 👋 Soy el asistente de EcoShop. ¿En qué puedo ayudarte?');
+      if (!sessionConversation || sessionConversation.messages.length === 0) {
+        addBotMessage('¡Hola! 👋 Soy el asistente de EcoShop. ¿En qué puedo ayudarte?');
+      }
     }
-  }, [open, initialized, addBotMessage]);
+  }, [open, initialized, sessionConversation, addBotMessage]);
 
   useEffect(() => {
     if (open) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });

@@ -41,10 +41,8 @@ function StarRating({ value, onChange }: { value: number; onChange?: (v: number)
 
 export default function ProductPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { products } = useProducts();
+  const { products, loading } = useProducts();
   const product = products.find(p => p.id === id);
-
-  if (!product) notFound();
 
   const { addItem, isInCart, cart } = useCart();
   const { toggle, isWishlisted } = useWishlist();
@@ -57,6 +55,11 @@ export default function ProductPage({ params }: { params: Promise<{ id: string }
   const [selectedVariants, setSelectedVariants] = useState<Record<string, string>>({});
   const [reviewForm, setReviewForm]     = useState({ rating: 0, comment: '' });
   const [showReviewForm, setShowReviewForm] = useState(false);
+
+  if (!product) {
+    if (loading) return null;
+    notFound();
+  }
 
   const reviews  = getReviews(product.id);
   const inCart   = isInCart(product.id);
